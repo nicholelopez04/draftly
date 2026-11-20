@@ -1,8 +1,19 @@
 # Draftly
 
-Draftly is a lightweight rich-text editor with a React and TipTap frontend and a FastAPI backend. It uses SQLite locally and hosted PostgreSQL on Render.
+Draftly is a document workspace built for the Ajaia LLC AI-Native Full Stack Developer Assignment. It lets reviewers try rich-text editing, persistent documents, and read-only sharing with two seeded demo users.
 
-**Use synthetic data only.** Demo-user switching is not real authentication. Anyone who can reach the API can impersonate Alex or Jordan by setting the demo-user header and can read or change data as that user. CORS controls which browser origins can read API responses, and direct API clients can still reach the service.
+**Use synthetic data only.** Demo-user switching is not real authentication. Anyone who can reach the API can impersonate Alex or Jordan by setting the demo-user header. Draftly does not support real-time simultaneous collaboration.
+
+[Live app](https://draftly-weld-rho.vercel.app) · [API health](https://draftly-api-7im4.onrender.com/health) · [Submission checklist](SUBMISSION.md) · [Architecture](ARCHITECTURE.md) · [AI workflow](AI_WORKFLOW.md)
+
+## Features and stack
+
+- Create, rename, reopen, and format documents with headings, bold, italic, underline, and bullet or numbered lists. Edits autosave with visible save status and retry.
+- Switch between Alex Morgan and Jordan Lee. Owners can grant or revoke read-only access. Recipients find shared documents under **Shared With Me**.
+- Open document links directly when the selected demo user has access. The demo preference is restored on refresh and in new tabs on the same site.
+- Import UTF-8 plain text or a subset of Markdown as a new editable document.
+
+The frontend uses React, TypeScript, Vite, TipTap, React Router, and Tailwind CSS. The API uses FastAPI, Pydantic, SQLModel, and Uvicorn. SQLite is the local default and psycopg connects to PostgreSQL on Render. The frontend is hosted on Vercel.
 
 ## Windows PowerShell setup
 
@@ -33,6 +44,17 @@ npm.cmd run dev
 ```
 
 Open http://localhost:5173. The frontend defaults to http://localhost:8000. To override it, copy `frontend/.env.example` to `frontend/.env.local` and edit `VITE_API_BASE_URL` before starting Vite. The previous `VITE_API_URL` variable still works as a fallback. Real `.env` files are gitignored.
+
+## Environment variables
+
+| Variable | Where to set it | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | Backend process or Render | Required on Render. Leave unset for local SQLite. |
+| `CORS_ALLOWED_ORIGINS` | Backend process or Render | Comma-separated exact browser origins. Defaults to the local Vite origin and is required on Render. |
+| `VITE_API_BASE_URL` | Frontend build environment or local Vite configuration | Public API origin, embedded at build time. |
+| `VITE_API_URL` | Frontend build environment | Legacy fallback when `VITE_API_BASE_URL` is unset. |
+| `PYTHON_VERSION` | Render | Selects the Python runtime. |
+| `RENDER`, `PORT` | Supplied by Render | Identifies the hosted runtime and sets its listening port. |
 
 ## Deploy the hosted demo
 
@@ -101,6 +123,7 @@ Push-Location .\backend
 Pop-Location
 
 Push-Location .\frontend
+npm.cmd test
 npm.cmd run build
 npm.cmd run lint
 Pop-Location
@@ -108,7 +131,7 @@ Pop-Location
 git diff --check
 ```
 
-The API tests use temporary SQLite databases. The frontend build outputs to `frontend/dist`.
+The API tests use temporary SQLite databases and exercise PostgreSQL configuration and bootstrap without a live database. The frontend tests mock API responses and cover demo-user restoration and document requests. The frontend build outputs to `frontend/dist`.
 
 ## Using Draftly
 
