@@ -29,7 +29,9 @@ export interface DocumentShare {
 
 export const maxImportBytes = 1024 * 1024
 
-const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+const apiUrl = (
+  import.meta.env.VITE_API_BASE_URL?.trim() || import.meta.env.VITE_API_URL || 'http://localhost:8000'
+).replace(/\/+$/, '')
 
 async function request<T>(userId: number, path: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(options?.headers)

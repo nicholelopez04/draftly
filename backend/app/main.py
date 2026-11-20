@@ -1,21 +1,21 @@
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, StringConstraints, field_serializer, model_validator
-from sqlalchemy import JSON, Engine, delete
-from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy import JSON, Engine, delete, text
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
+from .config import cors_origins, database_url
 from .imports import read_import
 
 DEFAULT_TITLE = "Untitled document"
 DEMO_USERS = {1: "Alex Morgan", 2: "Jordan Lee"}
-DATABASE = Path(__file__).resolve().parents[1] / "draftly.db"
 Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 
 
@@ -147,24 +147,32 @@ class DocumentDetail(DocumentSummary):
 
 
 def create_app(engine: Engine | None = None) -> FastAPI:
+    origins = cors_origins()
     if engine is None:
-        engine = create_engine(f"sqlite:///{DATABASE.as_posix()}", connect_args={"check_same_thread": False})
+        url = database_url()
+        if url.get_backend_name() == "sqlite":
+            engine = create_engine(url, connect_args={"check_same_thread": False})
+        else:
+            engine = create_engine(url, pool_pre_ping=True)
+    insert = postgres_insert if engine.dialect.name == "postgresql" else sqlite_insert
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        SQLModel.metadata.create_all(engine)
-        with Session(engine) as session:
-            session.execute(
+        with engine.begin() as connection:
+            if engine.dialect.name == "postgresql":
+                # Serialize schema initialization across Draftly workers and overlapping deploys.
+                connection.execute(text("SELECT pg_advisory_xact_lock(710679421)"))
+            SQLModel.metadata.create_all(connection)
+            connection.execute(
                 insert(User).values([{"id": user_id, "name": name} for user_id, name in DEMO_USERS.items()])
                 .on_conflict_do_nothing(index_elements=["id"])
             )
-            session.commit()
         yield
 
     app = FastAPI(title="Draftly", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173"],
+        allow_origins=origins,
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Content-Type", "X-Demo-User-Id"],
     )

@@ -3,3 +3,4 @@ sqlmodel==0.0.50
 uvicorn==0.54.0
 pytest==9.2.0
 httpx==0.28.1
+psycopg[binary]==3.3.3
