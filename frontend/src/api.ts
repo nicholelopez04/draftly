@@ -33,6 +33,15 @@ const apiUrl = (
   import.meta.env.VITE_API_BASE_URL?.trim() || import.meta.env.VITE_API_URL || 'http://localhost:8000'
 ).replace(/\/+$/, '')
 
+class ApiError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.status = status
+  }
+}
+
 async function request<T>(userId: number, path: string, options?: RequestInit): Promise<T> {
   const headers = new Headers(options?.headers)
   headers.set('X-Demo-User-Id', String(userId))
@@ -43,7 +52,8 @@ async function request<T>(userId: number, path: string, options?: RequestInit): 
   })
   if (!response.ok) {
     const body = await response.json().catch(() => null)
-    throw new Error(
+    throw new ApiError(
+      response.status,
       typeof body?.detail === 'string' ? body.detail :
         body?.detail?.[0]?.msg || `Request failed (${response.status}).`,
     )
@@ -64,8 +74,16 @@ export const importDocument = (userId: number, file: File, signal: AbortSignal) 
     method: 'POST', body: file, headers: { 'Content-Type': 'application/octet-stream' }, signal,
   })
 
-export const getDocument = (userId: number, id: string, signal: AbortSignal) =>
-  request<DraftDocument>(userId, documentPath(id), { signal })
+export async function getDocument(userId: number, id: string, signal: AbortSignal) {
+  try {
+    return await request<DraftDocument>(userId, documentPath(id), { signal })
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      throw new Error('Document not found or unavailable to the selected demo user.')
+    }
+    throw error
+  }
+}
 
 export const saveDocument = (userId: number, id: string, draft: Draft) =>
   request<DraftDocument>(userId, documentPath(id), {
