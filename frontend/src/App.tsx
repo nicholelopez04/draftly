@@ -1,6 +1,8 @@
 import { createBrowserRouter, Navigate, RouterProvider } from 'react-router-dom'
+import { useState } from 'react'
 import { Dashboard } from './Dashboard'
 import { Loading } from './components'
+import { DemoUserContext } from './demoUser'
 
 const router = createBrowserRouter([
   { path: '/', element: <Dashboard /> },
@@ -13,5 +15,14 @@ const router = createBrowserRouter([
 ])
 
 export default function App() {
-  return <RouterProvider router={router} />
+  const [userId, setUserId] = useState(() => sessionStorage.getItem('draftly-demo-user') === '2' ? 2 : 1)
+  function switchUser(id: number) {
+    sessionStorage.setItem('draftly-demo-user', String(id))
+    setUserId(id)
+  }
+  return (
+    <DemoUserContext.Provider value={{ userId, switchUser }}>
+      <RouterProvider router={router} />
+    </DemoUserContext.Provider>
+  )
 }

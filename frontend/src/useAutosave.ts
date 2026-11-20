@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useBlocker } from 'react-router-dom'
 import { saveDocument, type Draft, type DraftDocument } from './api'
 
-export function useAutosave(document: DraftDocument) {
+export function useAutosave(document: DraftDocument, userId: number) {
   const [status, setStatus] = useState<'saving' | 'saved' | 'error'>('saved')
   const [initialDraft] = useState<Draft>(() => ({ title: document.title, content: document.content }))
   const latest = useRef(initialDraft)
@@ -22,7 +22,7 @@ export function useAutosave(document: DraftDocument) {
         // Serialize requests so an older save can never overwrite a newer draft.
         while (saved.current !== latest.current) {
           const snapshot = latest.current
-          await saveDocument(id, snapshot)
+          await saveDocument(userId, id, snapshot)
           saved.current = snapshot
         }
         setStatus('saved')
@@ -35,7 +35,7 @@ export function useAutosave(document: DraftDocument) {
       }
     })()
     return inFlight.current
-  }, [id])
+  }, [id, userId])
 
   function update(change: Partial<Draft>) {
     latest.current = { ...latest.current, ...change }

@@ -5,9 +5,11 @@ import {
   LoaderCircle, TriangleAlert, Underline,
 } from 'lucide-react'
 import { useCallback, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useParams } from 'react-router-dom'
 import { getDocument, type DraftDocument } from './api'
 import { Loading, RequestError } from './components'
+import { useDemoUser } from './demoUser'
+import { ShareDialog } from './ShareDialog'
 import { useAutosave } from './useAutosave'
 import { useRequest } from './useRequest'
 
@@ -46,30 +48,45 @@ function FormattingBar({ editor }: { editor: Editor }) {
   )
 }
 
-function EditorForm({ document }: { document: DraftDocument }) {
+function EditorForm({ document, userId }: { document: DraftDocument; userId: number }) {
   const [title, setTitle] = useState(document.title)
-  const { status, update, flush } = useAutosave(document)
+  const [sharing, setSharing] = useState(false)
+  const { state } = useLocation()
+  const owned = document.owner_id === userId
+  const { status, update, flush } = useAutosave(document, userId)
   const editor = useEditor({
     extensions: [StarterKit.configure({ heading: { levels: [1, 2] } })],
     content: document.content,
-    editorProps: { attributes: { role: 'textbox', 'aria-label': 'Document body', 'aria-multiline': 'true', 'data-placeholder': 'Start writing…' } },
-    onUpdate: ({ editor }) => update({ content: editor.getJSON() }),
+    editable: owned,
+    editorProps: { attributes: {
+      role: 'textbox', 'aria-label': 'Document body', 'aria-multiline': 'true',
+      'aria-readonly': String(!owned), ...(owned ? { 'data-placeholder': 'Start writing…' } : {}),
+    } },
+    onUpdate: ({ editor }) => {
+      if (owned) update({ content: editor.getJSON() })
+    },
   })
 
   return (
     <>
       <header className="editor-header">
-        <BackLink />
-        <div className={`save-indicator ${status}`}>
-          <span role="status">
-            {status === 'saving' && <><LoaderCircle className="animate-spin" size={17} aria-hidden="true" /> Saving…</>}
-            {status === 'saved' && <><CloudCheck size={18} aria-hidden="true" /> Saved</>}
-            {status === 'error' && <><TriangleAlert size={17} aria-hidden="true" /> Couldn’t save</>}
-          </span>
-          {status === 'error' && <button onClick={() => void flush()}>Retry</button>}
-        </div>
+        <BackLink shared={!owned} />
+        {owned ? (
+          <div className="document-actions">
+            <div className={`save-indicator ${status}`}>
+              <span role="status">
+                {status === 'saving' && <><LoaderCircle className="animate-spin" size={17} aria-hidden="true" /> Saving…</>}
+                {status === 'saved' && <><CloudCheck size={18} aria-hidden="true" /> Saved</>}
+                {status === 'error' && <><TriangleAlert size={17} aria-hidden="true" /> Couldn’t save</>}
+              </span>
+              {status === 'error' && <button onClick={() => void flush()}>Retry</button>}
+            </div>
+            <button className="secondary-button" onClick={() => setSharing(true)}>Share</button>
+          </div>
+        ) : <span className="save-indicator">{document.owner_name} · Read Only</span>}
       </header>
       <main className="editor-main">
+        {owned && state?.imported && <p className="import-notice" role="status">Document imported.</p>}
         <div className="paper">
           <label className="sr-only" htmlFor="document-title">Document title</label>
           <input
@@ -78,28 +95,32 @@ function EditorForm({ document }: { document: DraftDocument }) {
             placeholder="Untitled document"
             value={title}
             maxLength={200}
+            readOnly={!owned}
             onChange={(event) => {
               setTitle(event.target.value)
               update({ title: event.target.value })
             }}
-            onBlur={() => setTitle((value) => value.trim() || 'Untitled document')}
+            onBlur={() => { if (owned) setTitle((value) => value.trim() || 'Untitled document') }}
           />
-          {editor && <FormattingBar editor={editor} />}
+          {owned && editor && <FormattingBar editor={editor} />}
           <EditorContent editor={editor} />
         </div>
       </main>
+      {sharing && <ShareDialog id={document.id} userId={userId} close={() => setSharing(false)} />}
     </>
   )
 }
 
-function BackLink() {
-  return <Link className="back-link" to="/"><ArrowLeft size={18} aria-hidden="true" /> Documents</Link>
+function BackLink({ shared = false }: { shared?: boolean }) {
+  return <Link className="back-link" to={shared ? '/?view=shared' : '/'}>
+    <ArrowLeft size={18} aria-hidden="true" /> {shared ? 'Shared With Me' : 'Documents'}
+  </Link>
 }
 
-function LoadedDocument({ id }: { id: string }) {
-  const load = useCallback((signal: AbortSignal) => getDocument(id, signal), [id])
+function LoadedDocument({ id, userId }: { id: string; userId: number }) {
+  const load = useCallback((signal: AbortSignal) => getDocument(userId, id, signal), [id, userId])
   const { result, retry } = useRequest(load)
-  if (result.state === 'ready') return <EditorForm document={result.data} />
+  if (result.state === 'ready') return <EditorForm document={result.data} userId={userId} />
   return (
     <>
       <header className="editor-header"><BackLink /></header>
@@ -114,5 +135,6 @@ function LoadedDocument({ id }: { id: string }) {
 
 export function DocumentRoute() {
   const { id } = useParams()
-  return <LoadedDocument key={id} id={id!} />
+  const { userId } = useDemoUser()
+  return <LoadedDocument key={`${userId}:${id}`} id={id!} userId={userId} />
 }

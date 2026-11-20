@@ -4,13 +4,17 @@ from pathlib import Path
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, StringConstraints, field_serializer, model_validator
-from sqlalchemy import JSON, Engine
+from sqlalchemy import JSON, Engine, delete
+from sqlalchemy.dialects.sqlite import insert
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
+from .imports import read_import
+
 DEFAULT_TITLE = "Untitled document"
+DEMO_USERS = {1: "Alex Morgan", 2: "Jordan Lee"}
 DATABASE = Path(__file__).resolve().parents[1] / "draftly.db"
 Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
 
@@ -31,6 +35,21 @@ class Document(SQLModel, table=True):
     content: dict = Field(sa_type=JSON)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class DocumentShare(SQLModel, table=True):
+    document_id: UUID = Field(foreign_key="document.id", primary_key=True)
+    user_id: int = Field(foreign_key="user.id", primary_key=True, index=True)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class ShareRequest(BaseModel):
+    user_id: int
+
+
+class DemoUser(BaseModel):
+    id: int
+    name: str
 
 
 class ContentMark(BaseModel):
@@ -112,6 +131,7 @@ class UpdateDocument(BaseModel):
 class DocumentSummary(BaseModel):
     id: UUID
     owner_id: int
+    owner_name: str
     title: str
     created_at: datetime
     updated_at: datetime
@@ -130,66 +150,110 @@ def create_app(engine: Engine | None = None) -> FastAPI:
     if engine is None:
         engine = create_engine(f"sqlite:///{DATABASE.as_posix()}", connect_args={"check_same_thread": False})
 
-    demo_owner_id = 1
-
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         SQLModel.metadata.create_all(engine)
         with Session(engine) as session:
-            if session.get(User, demo_owner_id) is None:
-                session.add(User(id=demo_owner_id, name="Alex Morgan"))
-                session.commit()
+            session.execute(
+                insert(User).values([{"id": user_id, "name": name} for user_id, name in DEMO_USERS.items()])
+                .on_conflict_do_nothing(index_elements=["id"])
+            )
+            session.commit()
         yield
 
     app = FastAPI(title="Draftly", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173"],
-        allow_methods=["GET", "POST", "PATCH"],
-        allow_headers=["Content-Type"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
+        allow_headers=["Content-Type", "X-Demo-User-Id"],
     )
 
     def get_session():
         with Session(engine) as session:
             yield session
 
-    def get_owned_document(document_id: UUID, session: Session) -> Document:
+    def require_demo_user(
+        user_id: Annotated[int, Header(alias="X-Demo-User-Id")],
+        session: Session = Depends(get_session),
+    ) -> int:
+        if user_id not in DEMO_USERS or session.get(User, user_id) is None:
+            raise HTTPException(status_code=400, detail="Unknown demo user.")
+        return user_id
+
+    def get_accessible_document(
+        document_id: UUID, session: Session, user_id: int, *, owner_only: bool = False,
+    ) -> Document:
         document = session.get(Document, document_id)
-        if document is None or document.owner_id != demo_owner_id:
-            raise HTTPException(status_code=404, detail="Document not found.")
-        return document
+        if document is not None:
+            if document.owner_id == user_id:
+                return document
+            if not owner_only and session.get(DocumentShare, (document_id, user_id)):
+                return document
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    def document_response(document: Document, session: Session) -> dict:
+        return {**document.model_dump(), "owner_name": session.get(User, document.owner_id).name}
+
+    def store_document(session: Session, user_id: int, title: str, content: dict) -> dict:
+        document = Document(owner_id=user_id, title=title, content=content)
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+        return document_response(document, session)
 
     @app.get("/health")
     def health():
         return {"status": "ok"}
 
+    @app.get("/demo-users", response_model=list[DemoUser])
+    def list_demo_users(
+        session: Session = Depends(get_session), _user_id: int = Depends(require_demo_user),
+    ):
+        return session.exec(select(User).where(User.id.in_(DEMO_USERS)).order_by(User.id)).all()
+
     @app.get("/documents", response_model=list[DocumentSummary])
-    def list_documents(session: Session = Depends(get_session)):
-        return session.exec(
-            select(Document)
-            .where(Document.owner_id == demo_owner_id)
+    def list_documents(session: Session = Depends(get_session), user_id: int = Depends(require_demo_user)):
+        shared_ids = select(DocumentShare.document_id).where(DocumentShare.user_id == user_id)
+        rows = session.exec(
+            select(Document.id, Document.owner_id, User.name, Document.title, Document.created_at, Document.updated_at)
+            .join(User, User.id == Document.owner_id)
+            .where((Document.owner_id == user_id) | Document.id.in_(shared_ids))
             .order_by(Document.updated_at.desc(), Document.id)
-        ).all()
+        )
+        return [
+            DocumentSummary(id=id_, owner_id=owner_id, owner_name=owner_name, title=title,
+                            created_at=created_at, updated_at=updated_at)
+            for id_, owner_id, owner_name, title, created_at, updated_at in rows
+        ]
 
     @app.post("/documents", response_model=DocumentDetail, status_code=status.HTTP_201_CREATED)
-    def create_document(payload: CreateDocument, session: Session = Depends(get_session)):
-        document = Document(
-            owner_id=demo_owner_id,
-            title=payload.title,
-            content={"type": "doc", "content": [{"type": "paragraph"}]},
-        )
-        session.add(document)
-        session.commit()
-        session.refresh(document)
-        return document
+    def create_document(
+        payload: CreateDocument, session: Session = Depends(get_session),
+        user_id: int = Depends(require_demo_user),
+    ):
+        return store_document(session, user_id, payload.title, {"type": "doc", "content": [{"type": "paragraph"}]})
+
+    @app.post("/documents/import", response_model=DocumentDetail, status_code=status.HTTP_201_CREATED)
+    async def import_document(
+        request: Request, filename: str, session: Session = Depends(get_session),
+        user_id: int = Depends(require_demo_user),
+    ):
+        title, content = await read_import(request, filename)
+        return store_document(session, user_id, title, content)
 
     @app.get("/documents/{document_id}", response_model=DocumentDetail)
-    def read_document(document_id: UUID, session: Session = Depends(get_session)):
-        return get_owned_document(document_id, session)
+    def read_document(
+        document_id: UUID, session: Session = Depends(get_session), user_id: int = Depends(require_demo_user),
+    ):
+        return document_response(get_accessible_document(document_id, session, user_id), session)
 
     @app.patch("/documents/{document_id}", response_model=DocumentDetail)
-    def update_document(document_id: UUID, payload: UpdateDocument, session: Session = Depends(get_session)):
-        document = get_owned_document(document_id, session)
+    def update_document(
+        document_id: UUID, payload: UpdateDocument, session: Session = Depends(get_session),
+        user_id: int = Depends(require_demo_user),
+    ):
+        document = get_accessible_document(document_id, session, user_id, owner_only=True)
         if payload.title is not None:
             document.title = payload.title
         if payload.content is not None:
@@ -197,7 +261,43 @@ def create_app(engine: Engine | None = None) -> FastAPI:
         document.updated_at = utc_now()
         session.commit()
         session.refresh(document)
-        return document
+        return document_response(document, session)
+
+    @app.get("/documents/{document_id}/shares", response_model=list[DocumentShare])
+    def list_shares(
+        document_id: UUID, session: Session = Depends(get_session), user_id: int = Depends(require_demo_user),
+    ):
+        get_accessible_document(document_id, session, user_id, owner_only=True)
+        return session.exec(select(DocumentShare).where(DocumentShare.document_id == document_id)).all()
+
+    @app.post("/documents/{document_id}/shares", status_code=204)
+    def grant_share(
+        document_id: UUID, payload: ShareRequest, session: Session = Depends(get_session),
+        user_id: int = Depends(require_demo_user),
+    ):
+        get_accessible_document(document_id, session, user_id, owner_only=True)
+        if payload.user_id == user_id:
+            raise HTTPException(status_code=400, detail="You already own this document.")
+        if payload.user_id not in DEMO_USERS or session.get(User, payload.user_id) is None:
+            raise HTTPException(status_code=400, detail="Unknown demo user.")
+        session.execute(
+            insert(DocumentShare).values(document_id=document_id, user_id=payload.user_id, created_at=utc_now())
+            .on_conflict_do_nothing(index_elements=["document_id", "user_id"])
+        )
+        session.commit()
+        return Response(status_code=204)
+
+    @app.delete("/documents/{document_id}/shares/{recipient_id}", status_code=204)
+    def revoke_share(
+        document_id: UUID, recipient_id: int, session: Session = Depends(get_session),
+        user_id: int = Depends(require_demo_user),
+    ):
+        get_accessible_document(document_id, session, user_id, owner_only=True)
+        session.execute(delete(DocumentShare).where(
+            DocumentShare.document_id == document_id, DocumentShare.user_id == recipient_id,
+        ))
+        session.commit()
+        return Response(status_code=204)
 
     return app
 
