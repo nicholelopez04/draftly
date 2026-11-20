@@ -120,8 +120,10 @@ button:disabled { cursor: wait; opacity: .65; }
 .tiptap h1 { font-size: 1.8em; }
 .tiptap h2 { font-size: 1.4em; }
 .tiptap ul, .tiptap ol { padding-inline-start: 1.65em; }
-.tiptap ul { list-style: disc; }
-.tiptap ol { list-style: decimal; }
+/* Tailwind resets list styles. Set markers on the items that render them. */
+.tiptap :is(ul, ol) > li { display: list-item; list-style-position: outside; }
+.tiptap ul > li { list-style-type: disc; }
+.tiptap ol > li { list-style-type: decimal; }
 .tiptap blockquote { border-inline-start: 3px solid var(--border); padding-inline-start: 1em; }
 .tiptap pre { background: #f1eefb; padding: .8em; border-radius: 6px; white-space: pre-wrap; }
 .tiptap a { color: var(--accent-dark); text-decoration: underline; }
